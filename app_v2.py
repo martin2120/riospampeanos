@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Servidor Flask - Bot Hídrico La Pampa
-Consulta datos hidrológicos desde COIRCO e INA/SNIH
+Consulta datos hidrológicos desde COIRCO e INA/SNIH mediante módulo lapampa.py en Gist
 """
 
 import os
@@ -11,7 +11,7 @@ import requests
 from datetime import datetime
 from flask import Flask, jsonify
 
-# URL del Gist crudo (lapampa.py)
+# URL del Gist crudo apuntando a lapampa.py
 GIST_RAW_URL = os.getenv(
     "GIST_RAW_URL",
     "https://gist.githubusercontent.com/martin2120/c108b944ca3206b9e79542eaa8137ea5/raw/lapampa.py"
@@ -25,17 +25,18 @@ def cargar_modulo_desde_gist():
     """Descarga y carga dinámicamente el módulo lapampa.py desde el Gist."""
     global lapampa_module
     try:
-        print(f"[INFO] Cargando módulo desde Gist...")
-        resp = requests.get(GIST_RAW_URL, timeout=10)
+        print("[INFO] Cargando módulo desde Gist...")
+        resp = requests.get(GIST_RAW_URL, timeout=12)
         resp.raise_for_status()
         
-        # Crear especificación del módulo
+        # Crear especificación y módulo virtual
         spec = importlib.util.spec_from_loader("lapampa", loader=None)
-        lapampa_module = importlib.util.module_from_spec(spec)
+        modulo_temp = importlib.util.module_from_spec(spec)
         
-        # Ejecutar el código del Gist en el contexto del módulo
-        exec(resp.text, lapampa_module.__dict__)
+        # Ejecutar el código del Gist dentro del espacio de nombres del módulo
+        exec(resp.text, modulo_temp.__dict__)
         
+        lapampa_module = modulo_temp
         print("[✓] Módulo lapampa cargado correctamente desde Gist")
         return True
     except Exception as e:
@@ -43,7 +44,7 @@ def cargar_modulo_desde_gist():
         return False
 
 
-# Cargar el módulo al iniciar
+# Intentar cargar el módulo al iniciar la API
 if not cargar_modulo_desde_gist():
     print("[ADVERTENCIA] No se pudo cargar el módulo del Gist al iniciar")
 
@@ -58,7 +59,7 @@ def index():
     return jsonify({
         "servicio": "Bot Hídrico La Pampa",
         "version": "2.0",
-        "estado": "activo",
+        "estado": "activo" if lapampa_module is not None else "degradado",
         "descripcion": "Sistema de monitoreo hidrológico en tiempo real",
         "fuentes": ["COIRCO (Río Colorado)", "SNIH/INA (Cuenca del Plata)"],
         "endpoints": {
@@ -78,7 +79,7 @@ def api_datos():
     if lapampa_module is None:
         return jsonify({
             "exito": False,
-            "error": "Módulo no cargado"
+            "error": "Módulo no cargado. Ejecuta POST /api/reload o verifica la URL del Gist."
         }), 500
     
     try:
@@ -107,10 +108,8 @@ def api_estaciones():
     
     try:
         datos = lapampa_module.listar_estaciones()
-        estaciones = []
-        
-        for est in datos:
-            estaciones.append({
+        estaciones = [
+            {
                 "id": est["id"],
                 "nombre": est["nombre"],
                 "rio": est["rio"],
@@ -118,7 +117,9 @@ def api_estaciones():
                 "tipo": est["tipo"],
                 "fuente": est.get("fuente", "N/A"),
                 "ultima_actualizacion": est.get("fecha_txt", "")
-            })
+            }
+            for est in datos
+        ]
         
         return jsonify({
             "exito": True,
@@ -185,7 +186,7 @@ def api_estado():
         else:
             return jsonify({
                 "exito": False,
-                "error": "Función obtener_estado_sistema no disponible"
+                "error": "Función obtener_estado_sistema no disponible en el Gist"
             }), 500
     except Exception as e:
         return jsonify({
@@ -196,17 +197,17 @@ def api_estado():
 
 @app.route("/api/reload", methods=["POST"])
 def api_reload():
-    """Recarga el módulo desde el Gist (útil tras actualizaciones)."""
+    """Recarga el módulo desde el Gist (útil tras actualizar el Gist)."""
     if cargar_modulo_desde_gist():
         return jsonify({
             "exito": True,
-            "mensaje": "Módulo recargado correctamente desde Gist",
+            "mensaje": "Módulo lapampa.py recargado correctamente desde Gist",
             "timestamp": datetime.now().isoformat()
         }), 200
     else:
         return jsonify({
             "exito": False,
-            "error": "Error al recargar el módulo"
+            "error": "Error al recargar el módulo desde el Gist"
         }), 500
 
 
@@ -216,7 +217,6 @@ def api_reload():
 
 @app.errorhandler(404)
 def not_found(error):
-    """Manejo de rutas no encontradas."""
     return jsonify({
         "exito": False,
         "error": "Endpoint no encontrado",
@@ -226,7 +226,6 @@ def not_found(error):
 
 @app.errorhandler(500)
 def internal_error(error):
-    """Manejo de errores internos."""
     return jsonify({
         "exito": False,
         "error": "Error interno del servidor",
@@ -241,15 +240,5 @@ def internal_error(error):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     debug = os.getenv("DEBUG", "False").lower() == "true"
-    
-    print(f"""
-    ╔════════════════════════════════════════════════════════════╗
-    ║       Bot Hídrico La Pampa - Servidor Flask v2.0          ║
-    ║                                                            ║
-    ║  Fuentes: COIRCO (Río Colorado) + SNIH/INA (Cuenca)      ║
-    ║  Puerto: {port}                                              ║
-    ║  Debug: {debug}                                              ║
-    ╚════════════════════════════════════════════════════════════╝
-    """)
     
     app.run(host="0.0.0.0", port=port, debug=debug)
